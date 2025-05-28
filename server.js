@@ -11,7 +11,7 @@ const app = express();
 // בסביבת פיתוח, נאפשר מ-localhost:3000.
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production' 
-            ? 'https://YOUR_VERCEL_APP_DOMAIN.vercel.app' // !!! החלף בכתובת האפליקציה שלך ב-Vercel !!!
+            ? 'https://nexus-2ne2.vercel.app' // !!! החלף בכתובת האפליקציה שלך ב-Vercel !!!
             : 'http://localhost:3000', // כתובת ה-Frontend שלך בפיתוח
   methods: ["GET", "POST"]
 };
