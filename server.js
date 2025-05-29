@@ -7,12 +7,23 @@ const cors = require('cors');
 const app = express();
 
 // הגדרות CORS
-// חשוב מאוד לאפשר גישה מהדומיין של אפליקציית ה-Next.js שלך (Vercel) בפרודקשן.
-// בסביבת פיתוח, נאפשר מ-localhost:3000.
+const allowedOrigins = [
+    'http://localhost:3000', // לפיתוח מקומי
+    'https://nexus-2ne2.vercel.app' // לדומיין שלך ב-Vercel - ודא שזה הדומיין הנכון
+    // אם יש לך עוד כתובות Preview מ-Vercel, הוסף גם אותן
+];
+
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-            ? 'https://nexus-2ne2.vercel.app' // !!! החלף בכתובת האפליקציה שלך ב-Vercel !!!
-            : 'http://localhost:3000', // כתובת ה-Frontend שלך בפיתוח
+  origin: function (origin, callback) {
+    // אפשר בקשות ללא origin (כמו מ-Postman או בדיקות מקומיות אם אתה רוצה)
+    // או בקשות שה-origin שלהן נמצא ברשימת המותרים
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS: Origin not allowed: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ["GET", "POST"]
 };
 app.use(cors(corsOptions));
@@ -23,18 +34,19 @@ const io = new Server(server, {
   cors: corsOptions // העבר את אותן הגדרות CORS גם ל-Socket.IO
 });
 
-const PORT = process.env.PORT || 3001; // הפורט בו ירוץ שרת הצ'אט
+const PORT = process.env.PORT || 3001;
 
-// אובייקט לאחסון משתמשים בחדרים (בזיכרון, לפשטות)
-// במערכת פרודקשן, כדאי לשקול פתרון עמיד יותר כמו Redis
-const rooms = {}; // rooms[roomId] = { socketId: { userId, userName }, ... }
+const rooms = {}; // rooms[roomId] = { socketId1: { userId, userName }, socketId2: { userId, userName } ... }
 
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
-  // אירוע להצטרפות לחדר פגישה
   socket.on('join-meeting-room', (meetingId, userId, userName) => {
-    socket.join(meetingId); // ה-socket מצטרף לחדר עם מזהה הפגישה
+    if (!meetingId || !userId) {
+        console.error("join-meeting-room: Missing meetingId or userId", {meetingId, userId, userName});
+        return;
+    }
+    socket.join(meetingId);
 
     if (!rooms[meetingId]) {
       rooms[meetingId] = {};
@@ -43,9 +55,9 @@ io.on('connection', (socket) => {
 
     console.log(`User ${userName} (ID: ${userId}, Socket: ${socket.id}) joined meeting room: ${meetingId}`);
 
-    // שלח הודעת מערכת לכל המשתתפים בחדר (חוץ מהשולח) על הצטרפות המשתמש
+    // שלח הודעת מערכת לכל המשתתפים האחרים בחדר על הצטרפות המשתמש
     socket.to(meetingId).emit('user-joined-chat', {
-      id: `system-${Date.now()}`,
+      id: `system-join-${Date.now()}`,
       senderId: 'system',
       senderName: 'System',
       text: `${userName || 'A user'} has joined the chat.`,
@@ -54,62 +66,61 @@ io.on('connection', (socket) => {
     });
   });
 
-  // אירוע לקבלת הודעת צ'אט חדשה מהלקוח
   socket.on('send-chat-message', (data) => {
     const { meetingId, senderId, senderName, text, timestamp } = data;
-    if (!meetingId) {
-        console.error('Error: meetingId is undefined for send-chat-message');
+    if (!meetingId || !senderId || !text) {
+        console.error('send-chat-message: Missing required data', data);
         return;
     }
     console.log(`Message in room ${meetingId} from ${senderName} (ID: ${senderId}): ${text}`);
     
-    // שלח את ההודעה לכל המשתתפים בחדר, כולל השולח (io.to)
+    // שלח את ההודעה לכל המשתתפים בחדר, כולל השולח
     io.to(meetingId).emit('receive-chat-message', {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`, // ID פשוט וייחודי
+      id: `${Date.now()}-${senderId.slice(-4)}-${Math.random().toString(16).slice(2, 6)}`, // ID מעט יותר ייחודי
       senderId,
       senderName,
       text,
       timestamp,
-      type: 'user-message'
+      type: 'user-message' // זהה לסוג ההודעה שהלקוח מצפה לו
     });
   });
 
-  // אירוע עזיבת חדר (יכול להיקרא על ידי הלקוח לפני התנתקות מהדף)
   socket.on('leave-meeting-room', (meetingId, userId, userName) => {
     if (meetingId && rooms[meetingId] && rooms[meetingId][socket.id]) {
       socket.leave(meetingId);
+      const leavingUserName = rooms[meetingId][socket.id]?.userName || userName || 'A user';
       delete rooms[meetingId][socket.id];
-      console.log(`User ${userName} (ID: ${userId}, Socket: ${socket.id}) left meeting room: ${meetingId}`);
+      console.log(`User ${leavingUserName} (ID: ${userId}, Socket: ${socket.id}) left meeting room: ${meetingId}`);
       
       socket.to(meetingId).emit('user-left-chat', {
-        id: `system-${Date.now()}`,
+        id: `system-leave-${Date.now()}`,
         senderId: 'system',
         senderName: 'System',
-        text: `${userName || 'A user'} has left the chat.`,
+        text: `${leavingUserName} has left the chat.`,
         timestamp: Date.now(),
         type: 'notification'
       });
     }
   });
 
-  // טיפול בהתנתקות ה-socket
   socket.on('disconnect', () => {
     console.log(`Socket disconnected: ${socket.id}`);
-    // הסר את המשתמש מכל החדרים בהם הוא רשום
     for (const meetingId in rooms) {
       if (rooms[meetingId] && rooms[meetingId][socket.id]) {
         const { userId, userName } = rooms[meetingId][socket.id];
-        delete rooms[meetingId][socket.id];
+        delete rooms[meetingId][socket.id]; // הסר את המשתמש מהחדר
         console.log(`User ${userName} (ID: ${userId}) auto-left room: ${meetingId} on disconnect`);
         
+        // הודע לשאר המשתתפים בחדר
         socket.to(meetingId).emit('user-left-chat', {
-          id: `system-${Date.now()}-disconnect`,
+          id: `system-disconnect-${Date.now()}`,
           senderId: 'system',
           senderName: 'System',
           text: `${userName || 'A user'} has disconnected.`,
           timestamp: Date.now(),
           type: 'notification'
         });
+        // אין צורך ב-break כאן אם משתמש יכול להיות במספר חדרים עם אותו socket (לא המקרה שלנו)
       }
     }
   });
